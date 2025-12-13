@@ -1,0 +1,17 @@
+
+
+# initialize git
+git init
+
+# add remote repo
+git remote add origin https://github.com/vishnukbarath/DriveSSL.git
+
+# add all files except ignored ones
+git add .
+
+# first commit
+git commit -m "Initial commit"
+
+# push to main/master branch
+git branch -M main
+git push -u origin main
