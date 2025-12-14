@@ -1,87 +1,99 @@
 import os
 import torch
-from torch.cuda.amp import autocast, GradScaler
+import torch.nn as nn
+import torch.optim as optim
 from torch.utils.data import DataLoader
+from torchvision import transforms
 from tqdm import tqdm
 
-from src.datasets.ssl_dataset import SSLImageDataset
-from src.models.simclr import SimCLR
-from src.losses.nt_xent_custom import nt_xent_custom as nt_xent_loss
-from src.utils.device import get_device
-
+# ---------------- Local imports ---------------- #
+from src.datasets.bdd_linear import BDDTimeOfDayDataset
+from src.models.resnet_simclr import get_resnet
 
 # ---------------- CONFIG ---------------- #
-
-DATA_DIR = r"C:\Users\vishn\Documents\DriveSSL\data"
 BATCH_SIZE = 256
-EPOCHS = 100
-LR = 3e-4
-TEMPERATURE = 0.5
-FEATURE_DIM = 128
+EPOCHS = 20
+LR = 0.001
+NUM_CLASSES = 3  # day / night / dawn-dusk
 
-SAVE_DIR = r"C:\Users\vishn\Documents\DriveSSL\experiments\simclr\checkpoints"
-os.makedirs(SAVE_DIR, exist_ok=True)
+IMAGES_DIR = r"C:\Users\vishn\Documents\DriveSSL\data\raw\bdd100k_original\bdd100k\images\100k\train"
+LABEL_JSON = r"C:\Users\vishn\Documents\DriveSSL\data\raw\bdd100k_original\bdd100k_labels_release\bdd100k\labels\bdd100k_labels_images_train.json"
+SIMCLR_CKPT = r"C:\Users\vishn\Documents\DriveSSL\experiments\simclr\checkpoints\simclr_epoch_20.pth"
 
-# ---------------------------------------- #
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# ---------------- TRANSFORMS ---------------- #
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+])
 
+# ---------------- MAIN ---------------- #
 def main():
-    device = get_device()
-    print(f"[INFO] Using device: {device}")
+    print(f"[INFO] Using device: {DEVICE}")
 
-    dataset = SSLImageDataset(DATA_DIR)
-    loader = DataLoader(
-        dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        num_workers=8,
-        pin_memory=True,
-        drop_last=True
-    )
+    # Dataset and loader
+    dataset = BDDTimeOfDayDataset(images_dir=IMAGES_DIR, label_json=LABEL_JSON, transform=transform)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
 
-    model = SimCLR(feature_dim=FEATURE_DIM).to(device)
+    # Load encoder
+    encoder = get_resnet().to(DEVICE)
+    ckpt = torch.load(SIMCLR_CKPT, map_location=DEVICE)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
-    scaler = GradScaler()
+    # Load only model weights
+    encoder.load_state_dict(ckpt["model_state"])
+    encoder.eval()  # freeze encoder
+    for param in encoder.parameters():
+        param.requires_grad = False
 
+    # Linear classifier
+    classifier = nn.Linear(2048, NUM_CLASSES).to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(classifier.parameters(), lr=LR)
+
+    # Training loop
     for epoch in range(1, EPOCHS + 1):
-        model.train()
-        epoch_loss = 0.0
+        classifier.train()
+        total_loss = 0.0
+        correct = 0
+        total = 0
 
-        pbar = tqdm(loader, desc=f"Epoch [{epoch}/{EPOCHS}]")
+        loop = tqdm(loader, desc=f"Epoch [{epoch}/{EPOCHS}]")
+        for images, labels in loop:
+            images = images.to(DEVICE)
+            labels = labels.to(DEVICE)
 
-        for x1, x2 in pbar:
-            x1 = x1.to(device, non_blocking=True)
-            x2 = x2.to(device, non_blocking=True)
+            with torch.no_grad():
+                features = encoder(images)
 
-            optimizer.zero_grad(set_to_none=True)
+            outputs = classifier(features)
+            loss = criterion(outputs, labels)
 
-            with autocast(device_type="cuda"):
-                z1 = model(x1)
-                z2 = model(x2)
-                loss = nt_xent_loss(z1, z2, TEMPERATURE)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            total_loss += loss.item() * images.size(0)
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
 
-            epoch_loss += loss.item()
-            pbar.set_postfix(loss=loss.item())
+            loop.set_postfix(loss=loss.item(), acc=100.0 * correct / total)
 
-        avg_loss = epoch_loss / len(loader)
-        print(f"[Epoch {epoch}] Avg Loss: {avg_loss:.4f}")
+        avg_loss = total_loss / total
+        acc = 100.0 * correct / total
+        print(f"[Epoch {epoch}] Avg Loss: {avg_loss:.4f} | Accuracy: {acc:.2f}%")
 
-        # Save checkpoint every 10 epochs
+        # Save classifier every 10 epochs
         if epoch % 10 == 0:
-            ckpt_path = os.path.join(SAVE_DIR, f"simclr_epoch_{epoch}.pth")
+            save_path = os.path.join("linear_checkpoints", f"classifier_epoch_{epoch}.pth")
+            os.makedirs("linear_checkpoints", exist_ok=True)
             torch.save({
                 "epoch": epoch,
-                "encoder": model.encoder.state_dict(),
-                "projector": model.projector.state_dict(),
-                "optimizer": optimizer.state_dict()
-            }, ckpt_path)
-            print(f"[INFO] Saved checkpoint: {ckpt_path}")
-
+                "classifier_state": classifier.state_dict(),
+                "optimizer_state": optimizer.state_dict()
+            }, save_path)
+            print(f"[INFO] Saved classifier checkpoint at {save_path}")
 
 if __name__ == "__main__":
     main()
