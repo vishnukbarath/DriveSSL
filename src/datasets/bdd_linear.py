@@ -19,11 +19,19 @@ class BDDTimeOfDayDataset(Dataset):
         with open(label_json, "r") as f:
             data = json.load(f)
 
+        missing = 0
         for item in data:
             img_name = item["name"]
             tod = item["attributes"]["timeofday"]
+            img_path = os.path.join(self.images_dir, img_name)
             if tod in TIME_MAP:
+                if not os.path.isfile(img_path):
+                    missing += 1
+                    continue
                 self.samples.append((img_name, TIME_MAP[tod]))
+
+        if missing:
+            print(f"Warning: {missing} samples referenced in labels were not found under {images_dir} and were skipped.")
 
     def __len__(self):
         return len(self.samples)
