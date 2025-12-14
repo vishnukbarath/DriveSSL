@@ -7,6 +7,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+experiments/
+experiments/*
 
 # Virtual environments
 venv/
