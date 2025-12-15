@@ -16,7 +16,7 @@ from src.utils.device import get_device
 DATA_DIR = r"C:\Users\vishn\Documents\DriveSSL\data"
 SIMCLR_CKPT = r"C:\Users\vishn\Documents\DriveSSL\experiments\simclr\checkpoints\simclr_epoch_20.pth"
 BATCH_SIZE = 64
-MAX_SAMPLES = 2000   # keep small for t-SNE stability
+MAX_SAMPLES = 2000
 DEVICE = get_device()
 
 LABEL_NAMES = {
@@ -67,7 +67,6 @@ def main():
     ckpt = torch.load(SIMCLR_CKPT, map_location=DEVICE)
     state_dict = ckpt.get("model_state", ckpt)
 
-    # encoder.* → backbone.*
     fixed = {}
     for k, v in state_dict.items():
         if k.startswith("encoder."):
@@ -99,9 +98,8 @@ def main():
     tsne = TSNE(
         n_components=2,
         perplexity=30,
-        n_iter=1000,
-        learning_rate="auto",
         init="pca",
+        learning_rate="auto",
         random_state=42
     )
 
