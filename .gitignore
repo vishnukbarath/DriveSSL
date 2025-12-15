@@ -9,7 +9,8 @@ __pycache__/
 *.pyd
 experiments/
 experiments/*
-
+lane_segmentation/
+lane_segmentation/*
 # Virtual environments
 venv/
 env/
