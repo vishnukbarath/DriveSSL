@@ -1,87 +1,82 @@
+import json
 import os
-import time
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import transforms
+from PIL import Image
+from torch.utils.data import Dataset
 
-from src.models.multihead_model import MultiHeadSimCLR
-from src.datasets.bdd_multihead import BDDMultiHeadDataset
-from src.utils.device import get_device
+# ---- LABEL MAPS (COMPLETE) ---- #
+
+TIME_MAP = {
+    "daytime": 0,
+    "night": 1,
+    "dawn/dusk": 2
+}
+
+WEATHER_MAP = {
+    "clear": 0,
+    "partly cloudy": 1,
+    "overcast": 2,
+    "rainy": 3,
+    "snowy": 4,
+    "foggy": 5
+}
+
+DOMAIN_MAP = {
+    "city street": 0,
+    "highway": 1
+}
 
 
-DATA_DIR = r"C:\Users\vishn\Documents\DriveSSL\data"
-CKPT = r"C:\Users\vishn\Documents\DriveSSL\experiments\simclr\checkpoints\simclr_epoch_20.pth"
-BATCH_SIZE = 64
-EPOCHS = 15
-LR = 3e-4
+class BDDMultiHeadDataset(Dataset):
+    def __init__(self, img_dir, label_json, transform=None):
+        self.img_dir = img_dir
+        self.transform = transform
 
-DEVICE = get_device()
+        with open(label_json, "r") as f:
+            raw_data = json.load(f)
 
+        self.samples = []
 
-def main():
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor()
-    ])
+        for item in raw_data:
+            img_name = item["name"]
+            img_path = os.path.join(img_dir, img_name)
 
-    train_img = os.path.join(DATA_DIR, "raw", "bdd100k_original", "bdd100k",
-                             "bdd100k", "images", "100k", "train")
-    train_json = os.path.join(DATA_DIR, "raw", "bdd100k_original",
-                              "bdd100k_labels_release", "bdd100k", "labels",
-                              "bdd100k_labels_images_train.json")
+            if not os.path.exists(img_path):
+                continue
 
-    dataset = BDDMultiHeadDataset(train_img, train_json, transform)
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+            attrs = item.get("attributes", {})
 
-    model = MultiHeadSimCLR().to(DEVICE)
+            # Skip samples with missing labels
+            if (
+                attrs.get("timeofday") not in TIME_MAP
+                or attrs.get("weather") not in WEATHER_MAP
+                or attrs.get("scene") not in DOMAIN_MAP
+            ):
+                continue
 
-    # Load SimCLR encoder weights
-    ckpt = torch.load(CKPT, map_location=DEVICE)
-    state = ckpt.get("model_state", ckpt)
-
-    encoder_dict = {}
-    for k, v in state.items():
-        if k.startswith("encoder."):
-            encoder_dict["encoder.backbone." + k[len("encoder."):]] = v
-
-    model.load_state_dict(encoder_dict, strict=False)
-    print("[INFO] Loaded SimCLR encoder")
-
-    optimizer = optim.Adam(model.parameters(), lr=LR)
-    ce = nn.CrossEntropyLoss()
-
-    for epoch in range(EPOCHS):
-        start = time.time()
-        model.train()
-
-        total_loss = 0.0
-        for imgs, t, w, d in loader:
-            imgs, t, w, d = imgs.to(DEVICE), t.to(DEVICE), w.to(DEVICE), d.to(DEVICE)
-
-            out = model(imgs)
-
-            loss = (
-                ce(out["time"], t) +
-                ce(out["weather"], w) +
-                ce(out["domain"], d)
+            self.samples.append(
+                (
+                    img_path,
+                    TIME_MAP[attrs["timeofday"]],
+                    WEATHER_MAP[attrs["weather"]],
+                    DOMAIN_MAP[attrs["scene"]],
+                )
             )
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        print(f"[INFO] Loaded {len(self.samples)} multi-head samples")
 
-            total_loss += loss.item()
+    def __len__(self):
+        return len(self.samples)
 
-        print(f"Epoch [{epoch+1}/{EPOCHS}] "
-              f"Loss: {total_loss/len(loader):.4f} "
-              f"Time: {time.time()-start:.2f}s")
+    def __getitem__(self, idx):
+        img_path, time_y, weather_y, domain_y = self.samples[idx]
 
-    os.makedirs("experiments/multihead", exist_ok=True)
-    torch.save(model.state_dict(), "experiments/multihead/multihead_model.pth")
-    print("[DONE] Multi-head model saved")
+        img = Image.open(img_path).convert("RGB")
+        if self.transform:
+            img = self.transform(img)
 
-
-if __name__ == "__main__":
-    main()
+        return {
+            "image": img,
+            "time": time_y,
+            "weather": weather_y,
+            "domain": domain_y,
+        }
