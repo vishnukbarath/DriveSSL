@@ -111,6 +111,7 @@ def main():
                        "experiments/weather/weather_linear.pth")
             print("[INFO] Saved best model")
 
+
     print(f"[DONE] Best Val Acc: {best_acc:.2f}%")
     print(f"Total time: {(time.time()-start)/60:.2f} min")
 
