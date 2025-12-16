@@ -1,109 +1,159 @@
-import json
 import os
-from PIL import Image
-from torch.utils.data import Dataset
+import time
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import transforms
 
-# ---------------- LABEL MAPS ---------------- #
+from src.models.resnet_simclr import get_resnet
+from src.datasets.bdd_multihead import BDDMultiHeadDataset
+from src.utils.device import get_device
 
-TIME_MAP = {
-    "daytime": 0,
-    "night": 1,
-    "dawn/dusk": 2,
-}
+# ---------------- CONFIG ---------------- #
 
-WEATHER_MAP = {
-    "clear": 0,
-    "partly cloudy": 1,
-    "overcast": 2,
-    "rainy": 3,
-    "snowy": 4,
-    "foggy": 5,
-}
+DATA_DIR = r"C:\Users\vishn\Documents\DriveSSL\data"
+IMG_TRAIN = os.path.join(
+    DATA_DIR,
+    "raw",
+    "bdd100k_original",
+    "bdd100k",
+    "bdd100k",
+    "images",
+    "100k",
+    "train",
+)
+LABEL_TRAIN = os.path.join(
+    DATA_DIR,
+    "raw",
+    "bdd100k_original",
+    "bdd100k_labels_release",
+    "bdd100k",
+    "labels",
+    "bdd100k_labels_images_train.json",
+)
 
-DOMAIN_MAP = {
-    "city street": 0,
-    "highway": 1,
-}
+BATCH_SIZE = 64
+EPOCHS = 10
+LR = 3e-4
+
+NUM_TIME = 3
+NUM_WEATHER = 6
+NUM_DOMAIN = 2
+
+SIMCLR_CKPT = r"C:\Users\vishn\Documents\DriveSSL\experiments\simclr\checkpoints\simclr_epoch_20.pth"
+
+DEVICE = get_device()
+
+# ---------------- MODEL ---------------- #
+
+class MultiHeadSimCLR(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = get_resnet()
+
+        self.head_time = nn.Linear(2048, NUM_TIME)
+        self.head_weather = nn.Linear(2048, NUM_WEATHER)
+        self.head_domain = nn.Linear(2048, NUM_DOMAIN)
+
+    def forward(self, x):
+        feats = self.encoder(x)
+        return {
+            "time": self.head_time(feats),
+            "weather": self.head_weather(feats),
+            "domain": self.head_domain(feats),
+        }
 
 
-class BDDMultiHeadDataset(Dataset):
-    """
-    Multi-head dataset for BDD100K
-    Outputs:
-      - time of day
-      - weather
-      - scene domain
-    """
+# ---------------- MAIN ---------------- #
 
-    def __init__(self, img_dir, label_json, transform=None):
-        self.img_dir = img_dir
-        self.transform = transform
+def main():
+    print(f"[INFO] Using device: {DEVICE}")
 
-        with open(label_json, "r") as f:
-            raw_data = json.load(f)
+    transform = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ]
+    )
 
-        self.samples = []
-        skipped = 0
+    dataset = BDDMultiHeadDataset(
+        IMG_TRAIN,
+        LABEL_TRAIN,
+        transform=transform,
+    )
 
-        for item in raw_data:
-            img_name = item.get("name")
-            if img_name is None:
-                skipped += 1
-                continue
+    loader = DataLoader(
+        dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
 
-            img_path = os.path.join(img_dir, img_name)
-            if not os.path.exists(img_path):
-                skipped += 1
-                continue
+    model = MultiHeadSimCLR().to(DEVICE)
 
-            attrs = item.get("attributes", {})
+    # ---- Load SimCLR encoder ---- #
+    ckpt = torch.load(SIMCLR_CKPT, map_location=DEVICE)
+    state = ckpt.get("model_state", ckpt)
 
-            time_key = attrs.get("timeofday")
-            weather_key = attrs.get("weather")
-            domain_key = attrs.get("scene")
+    filtered = {
+        k.replace("encoder.", "backbone."): v
+        for k, v in state.items()
+        if k.startswith("encoder.")
+    }
 
-            if (
-                time_key not in TIME_MAP
-                or weather_key not in WEATHER_MAP
-                or domain_key not in DOMAIN_MAP
-            ):
-                skipped += 1
-                continue
+    model.encoder.load_state_dict(filtered, strict=False)
+    print("[INFO] Loaded SimCLR encoder weights")
 
-            self.samples.append(
-                (
-                    img_path,
-                    TIME_MAP[time_key],
-                    WEATHER_MAP[weather_key],
-                    DOMAIN_MAP[domain_key],
-                )
-            )
+    # ---- Losses & Optimizer ---- #
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+
+    print("[INFO] Starting multi-head training")
+
+    for epoch in range(EPOCHS):
+        start = time.time()
+        model.train()
+
+        total_loss = 0.0
+
+        for batch in loader:
+            imgs = batch["image"].to(DEVICE)
+            time_y = batch["time"].to(DEVICE)
+            weather_y = batch["weather"].to(DEVICE)
+            domain_y = batch["domain"].to(DEVICE)
+
+            out = model(imgs)
+
+            loss_time = loss_fn(out["time"], time_y)
+            loss_weather = loss_fn(out["weather"], weather_y)
+            loss_domain = loss_fn(out["domain"], domain_y)
+
+            loss = loss_time + loss_weather + loss_domain
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
 
         print(
-            f"[INFO] Loaded {len(self.samples)} multi-head samples "
-            f"(skipped {skipped})"
+            f"Epoch [{epoch+1}/{EPOCHS}] "
+            f"Loss: {total_loss/len(loader):.4f} "
+            f"Time: {time.time()-start:.2f}s"
         )
 
-        if len(self.samples) == 0:
-            raise RuntimeError("No valid multi-head samples found.")
+    os.makedirs("experiments/multihead", exist_ok=True)
+    torch.save(
+        model.state_dict(),
+        "experiments/multihead/multihead_model.pth",
+    )
 
-    def __len__(self):
-        return len(self.samples)
+    print("[DONE] Multi-head model saved")
 
-    def __getitem__(self, idx):
-        img_path, time_y, weather_y, domain_y = self.samples[idx]
 
-        try:
-            img = Image.open(img_path).convert("RGB")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load image: {img_path}") from e
+# ---------------- ENTRY ---------------- #
 
-        if self.transform:
-            img = self.transform(img)
-
-        return {
-            "image": img,
-            "time": time_y,
-            "weather": weather_y,
-            "domain": domain_y,
-        }
+if __name__ == "__main__":
+    main()
