@@ -1,7 +1,21 @@
-import json
 import os
+import json
 from PIL import Image
 from torch.utils.data import Dataset
+import torchvision.transforms as T
+
+WEATHER_MAP = {
+    "clear": 0,
+    "rainy": 1,
+    "snowy": 2,
+    "foggy": 3
+}
+
+SCENE_MAP = {
+    "city street": 0,
+    "highway": 1,
+    "residential": 2
+}
 
 TIME_MAP = {
     "daytime": 0,
@@ -9,62 +23,53 @@ TIME_MAP = {
     "dawn/dusk": 2
 }
 
-WEATHER_MAP = {
-    "clear": 0,
-    "partly cloudy": 1,
-    "overcast": 2,
-    "rainy": 3,
-    "snowy": 4,
-    "foggy": 5
-}
-
-DOMAIN_MAP = {
-    "city street": 0,
-    "highway": 1
-}
-
-
 class BDDMultiHeadDataset(Dataset):
-    def __init__(self, img_dir, label_json, transform=None):
-        self.samples = []
-        self.transform = transform
+    def __init__(self, image_root, label_json):
+        self.image_root = image_root
 
         with open(label_json, "r") as f:
-            data = json.load(f)
+            raw_labels = json.load(f)
 
-        for item in data:
+        # filename → attributes
+        self.label_map = {}
+        for item in raw_labels:
             attrs = item.get("attributes", {})
-            img_path = os.path.join(img_dir, item["name"])
-
-            if not os.path.exists(img_path):
-                continue
-
             if (
-                attrs.get("timeofday") not in TIME_MAP
-                or attrs.get("weather") not in WEATHER_MAP
-                or attrs.get("scene") not in DOMAIN_MAP
+                attrs.get("weather") in WEATHER_MAP and
+                attrs.get("scene") in SCENE_MAP and
+                attrs.get("timeofday") in TIME_MAP
             ):
-                continue
+                self.label_map[item["name"]] = attrs
 
-            self.samples.append(
-                (
-                    img_path,
-                    TIME_MAP[attrs["timeofday"]],
-                    WEATHER_MAP[attrs["weather"]],
-                    DOMAIN_MAP[attrs["scene"]],
-                )
-            )
+        self.samples = []
+        for root, _, files in os.walk(image_root):
+            for file in files:
+                if file.endswith(".jpg") and file in self.label_map:
+                    self.samples.append(os.path.join(root, file))
 
-        print(f"[INFO] Loaded {len(self.samples)} samples")
+        print(f"[INFO] Loaded {len(self.samples)} valid samples")
+
+        if len(self.samples) == 0:
+            raise RuntimeError("NO VALID SAMPLES FOUND — CHECK DATASET PATHS")
+
+        self.transform = T.Compose([
+            T.Resize((224, 224)),
+            T.ToTensor()
+        ])
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path, t, w, d = self.samples[idx]
+        img_path = self.samples[idx]
         img = Image.open(img_path).convert("RGB")
 
-        if self.transform:
-            img = self.transform(img)
+        attrs = self.label_map[os.path.basename(img_path)]
 
-        return img, t, w, d
+        targets = {
+            "weather": WEATHER_MAP[attrs["weather"]],
+            "scene": SCENE_MAP[attrs["scene"]],
+            "timeofday": TIME_MAP[attrs["timeofday"]],
+        }
+
+        return self.transform(img), targets
