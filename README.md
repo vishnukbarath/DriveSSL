@@ -81,3 +81,13 @@ Each head is trained using cross-entropy loss while sharing the same visual enco
 
 Confusion matrices are saved per epoch and reveal strong class collapse patterns,
 especially in weather and scene prediction tasks.
+## Experiments and Checkpoints
+
+Saved artifacts include:
+- `best_multihead.pth`: Best-performing multi-head model
+- `simclr_epoch_10.pth`, `simclr_epoch_20.pth`: SimCLR checkpoints
+- Confusion matrices saved per epoch
+- Linear evaluation results
+
+All experiments are deterministic given fixed seeds and hardware.
+The project is structured for reproducibility and incremental research extensions.
