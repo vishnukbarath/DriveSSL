@@ -65,3 +65,19 @@ Each head is trained using cross-entropy loss while sharing the same visual enco
 - Encoder frozen
 - Single linear classifier trained on downstream labels
 - Used to measure representation quality
+## Training and Evaluation
+
+### Training Scripts
+- `train_simclr.py`: SimCLR pretraining
+- `train_multihead.py`: Multi-head supervised training
+- `train_confusion_multihead.py`: Multi-head training with confusion matrix logging
+- `train_linear_eval.py`: Linear evaluation
+- `train_finetune.py`: End-to-end finetuning
+
+### Metrics
+- Accuracy per head
+- Per-class confusion matrices
+- Epoch-wise loss tracking
+
+Confusion matrices are saved per epoch and reveal strong class collapse patterns,
+especially in weather and scene prediction tasks.
