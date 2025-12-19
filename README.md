@@ -45,3 +45,23 @@ DriveSSL/
 │   ├── linear_eval/
 │   └── weather/
 └── README.md
+## Models and Learning Paradigms
+
+### Self-Supervised Learning (SimCLR)
+- Backbone: ResNet-50
+- Loss: NT-Xent
+- Augmentations: Random crop, color jitter, blur
+- Output: Normalized feature embeddings
+
+### Multi-Head Supervised Learning
+A shared ResNet-18 encoder with three task-specific heads:
+- Weather classification
+- Scene classification
+- Time-of-day classification
+
+Each head is trained using cross-entropy loss while sharing the same visual encoder.
+
+### Linear Evaluation
+- Encoder frozen
+- Single linear classifier trained on downstream labels
+- Used to measure representation quality
